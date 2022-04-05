@@ -94,7 +94,7 @@ def allRequest(reqContent, captchaContent, errLen, rcaptcha="####"):
 def prepare(reqContent, rep, captchaContent, errLen):
     reqContent = reqContent.replace("****", rep)
     len = allRequest(reqContent, captchaContent, errLen)
-    if len <= 0:
+    if int(len) <= 0:
         sys.exit(len)
     print("爆破的密码为：{0},返回的长度为:{1}".format(rep, len))
 
