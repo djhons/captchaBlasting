@@ -55,7 +55,6 @@ def getCaptcha(method, url, header, data):
         print("获取验证码失败，正在重试", e)
         return getCaptcha(method, url, header, data)
     try:
-        open("test.jpg","wb").write(resp.content)
         captcha = ddddocr.DdddOcr().classification(resp.content)
     except Exception as e:
         print(e)
